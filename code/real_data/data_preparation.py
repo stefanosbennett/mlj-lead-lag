@@ -24,6 +24,9 @@ data = get_data(directory)
 # row t: gives the log return going from the close at day t - 1 to close at day t
 log_ret = np.log(data.prevAdjClose).ffill().diff().shift(-1).fillna(0)
 
+# cleaning ANR data
+log_ret.loc['2005-02-15', 'ANR'] = 0
+
 # extracting SIC code
 sic = data.SICCD.ffill().iloc[-1]
 sic = transform_sic(sic)

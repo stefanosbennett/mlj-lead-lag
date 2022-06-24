@@ -31,7 +31,7 @@ from real_data.sharpe_ratio_test import sharpe_ratio_test
 from p_tqdm import p_map
 import real_data.strategy_utils
 from real_data.strategy_utils import LinearARModel, weighted_flow_signal, run_strat, \
-    sound_notification, perm_test
+    sound_notification, perm_test, VAR_signal
 
 log_ret_type = ''  # _residuals
 log_ret = pd.read_pickle('./data/real_data/log_returns' + log_ret_type + '.pkl')
@@ -111,10 +111,49 @@ plt.ylabel('Cumulative return (%)')
 # plt.savefig('./figures/real_data/pnl_curve.pdf')
 plt.show()
 
+# saving the strategy linear pnl
+pnl_linear.to_pickle('./data/pickled_data/pnl_linear_cluster_strategy.pkl')
+
 # mean bps return
 print(pnl_linear.sum(1).mean() * 1e4)
 
 pnl_linear.sum(1).loc['2002':].corr(log_ret_SPY.loc['2002':])
+
+#%% Lasso VAR model
+
+position, pnl = run_strat(log_ret, clusters_rolling, flow_graph_rolling,
+                          signal_fn=VAR_signal, reversion_days=5)
+
+pnl.sum(1).cumsum().plot(); plt.show()
+position_normalised = position.apply(lambda col: col/pnl.sum(1).rolling(21, min_periods=5).std().shift(1).ffill().bfill())
+pnl_normalised = position_normalised * log_ret
+pnl_normalised.loc['2002':].sum(1).cumsum().plot(); plt.show()
+
+print(sharpe_ratio_test(pnl.sum(1).loc['2002':]))
+print(sharpe_ratio_test(pnl_normalised.sum(1).loc['2002':]))
+
+print(((pnl_normalised.sum(1)/position_normalised.abs().sum(1)).loc['2002':].mean() * 1e4).round(1), ' bps')
+
+# mean bps return
+(pnl_normalised.sum(1)/position_normalised.abs().sum(1)).mean() * 1e4
+
+pnl_linear = (position_normalised * (np.exp(log_ret) - 1))
+# scaling for 10% annualised volatility
+pnl_linear *= 0.1 / (pnl_linear.sum(1).std() * np.sqrt(252))
+print(sharpe_ratio_test(pnl_linear.sum(1).loc['2002':]))
+(((pnl_linear.sum(1) + 1).loc['2002':].cumprod() - 1) * 100).plot()
+plt.ylabel('Cumulative return (%)')
+# plt.savefig('./figures/real_data/pnl_curve.pdf')
+plt.show()
+
+# saving the Lasso VAR model linear pnl
+pnl_linear.to_pickle('./data/pickled_data/pnl_linear_lasso_var.pkl')
+
+# computing the correlation between the Lasso VAR and strategy pnls
+pnl_linear_lasso_var = pd.read_pickle('./data/pickled_data/pnl_linear_lasso_var.pkl')
+pnl_linear_cluster_strategy = pd.read_pickle('./data/pickled_data/pnl_linear_cluster_strategy.pkl')
+
+pnl_linear_lasso_var.sum(1).loc['2002':].corr(pnl_linear_cluster_strategy.sum(1).loc['2002':])
 
 #%% market buy and hold
 

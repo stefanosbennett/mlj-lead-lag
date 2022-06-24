@@ -11,7 +11,8 @@ import multiprocessing as mp
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Lasso
+from sklearn.model_selection import GridSearchCV
 from real_data.rolling_utils import get_flow_graph_rolling
 from real_data.sharpe_ratio_test import sharpe_ratio_test
 
@@ -51,6 +52,54 @@ class LinearARModel:
         x = x.values.reshape(1, self.reversion_days)
 
         return np.float(self.model.predict(x).squeeze())
+
+
+class VAR_model:
+
+    def __init__(self, log_ret, n_lags=5):
+        self.log_ret = log_ret
+        self.n_lags = n_lags
+        self.model = None
+
+    def get_design_matrix(self, log_ret_x):
+        X = {lag: log_ret_x.shift(lag).fillna(0) for lag in range(1, self.n_lags + 1)}
+        X = pd.concat(X, axis=1)
+        X = X.values
+
+        return X
+
+    def fit(self):
+        # getting features and labels
+        X = self.get_design_matrix(self.log_ret)
+        y = self.log_ret.values
+
+        self.model = Lasso(max_iter=100)
+        self.model = GridSearchCV(self.model, param_grid={'alpha': np.logspace(-4, 0, 5)}, n_jobs=5, cv=5)
+        self.model.fit(X, y)
+
+        return self.model
+
+    def predict(self, log_ret_x):
+        """
+        :param log_ret_x: dataframe of historical values for all time series
+        :return: vector of predictions
+        """
+        x = {lag: log_ret_x.iloc[-lag] for lag in range(1, self.n_lags + 1)}
+        x = pd.concat(x, axis=0)
+        x = x.values.reshape(1, -1)
+
+        predictions = self.model.predict(x).squeeze()
+        predictions = pd.Series(predictions)
+        predictions = predictions.values
+
+        return predictions
+
+
+def VAR_signal(log_ret_subset, VAR_model):
+    predictions = VAR_model.predict(log_ret_subset)
+    predictions = pd.Series(predictions, index=log_ret_subset.columns)
+
+    return predictions
 
 
 def flow_graph_process(flow_graph, cut_off_quantile, flow_graph_sign):
@@ -135,14 +184,31 @@ def run_strat(log_ret, clusters_rolling, flow_graph_rolling, reversion_days, sig
 
                 signal_kwargs['cluster_models'] = cluster_models
 
+            elif signal_fn.__name__ == 'VAR_signal':
+                # LASSO-VAR model with 5 lag
+                # using past year of data
+                log_ret_subset = log_ret_subset.iloc[-250:]
+                # reversion_days is the number of lags to use
+                model = VAR_model(log_ret_subset, n_lags=reversion_days)
+                model.fit()
+
+                signal_kwargs['VAR_model'] = model
+
             if len(update_date_index) > 0:
                 update_date = update_date_index.pop()
 
-        position[date] = signal_fn(log_ret_subset=log_ret_subset,
-                                   clusters=clusters,
-                                   flow_graph=flow_graph,
-                                   reversion_days=reversion_days,
-                                   **signal_kwargs)
+        if signal_fn.__name__ == 'weighted_flow_signal':
+
+            position[date] = signal_fn(log_ret_subset=log_ret_subset,
+                                       clusters=clusters,
+                                       flow_graph=flow_graph,
+                                       reversion_days=reversion_days,
+                                       **signal_kwargs)
+
+        elif signal_fn.__name__ == 'VAR_signal':
+
+            position[date] = signal_fn(log_ret_subset=log_ret_subset,
+                                       VAR_model=signal_kwargs['VAR_model'])
 
     position = pd.concat(position).unstack(-1)
     position = position.shift(1)
